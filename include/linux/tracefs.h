@@ -68,6 +68,8 @@ void eventfs_remove(struct eventfs_file *ef);
 
 void eventfs_remove_events_dir(struct dentry *dentry);
 
+void eventfs_set_ef_status_free(struct dentry *dentry);
+
 struct dentry *tracefs_create_file(const char *name, umode_t mode,
 				   struct dentry *parent, void *data,
 				   const struct file_operations *fops);

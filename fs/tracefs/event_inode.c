@@ -208,10 +208,198 @@ static struct dentry *eventfs_create_dir(const char *name, umode_t mode,
 	return eventfs_end_creating(dentry);
 }
 
+/**
+ * eventfs_set_ef_status_free - set the ef->status to free
+ * @dentry: dentry who's status to be freed
+ *
+ * eventfs_set_ef_status_free will be called if no more
+ * reference remains
+ */
+void eventfs_set_ef_status_free(struct dentry *dentry)
+{
+	struct tracefs_inode *ti_parent;
+	struct eventfs_file *ef;
+
+	ti_parent = get_tracefs(dentry->d_parent->d_inode);
+	if (!ti_parent || !(ti_parent->flags & TRACEFS_EVENT_INODE))
+		return;
+
+	ef = dentry->d_fsdata;
+	if (!ef)
+		return;
+	ef->created = false;
+	ef->dentry = NULL;
+}
+
+/**
+ * eventfs_post_create_dir - post create dir routine
+ * @ef: eventfs_file of recently created dir
+ *
+ * Files with-in eventfs dir should know dentry of parent dir
+ */
+static void eventfs_post_create_dir(struct eventfs_file *ef)
+{
+	struct eventfs_file *ef_child;
+	struct tracefs_inode *ti;
+
+	eventfs_down_read((struct rw_semaphore *) ef->data);
+	/* fill parent-child relation */
+	list_for_each_entry(ef_child, &ef->ei->e_top_files, list) {
+		ef_child->d_parent = ef->dentry;
+	}
+	eventfs_up_read((struct rw_semaphore *) ef->data);
+
+	ti = get_tracefs(ef->dentry->d_inode);
+	ti->private = ef->ei;
+}
+
+/**
+ * eventfs_root_lookup - lookup routine to create file/dir
+ * @dir: directory in which lookup to be done
+ * @dentry: file/dir dentry
+ * @flags:
+ *
+ * Used to create dynamic file/dir with-in @dir, search with-in ei
+ * list, if @dentry found go ahead and create the file/dir
+ */
+
+static struct dentry *eventfs_root_lookup(struct inode *dir,
+					  struct dentry *dentry,
+					  unsigned int flags)
+{
+	struct tracefs_inode *ti;
+	struct eventfs_inode *ei;
+	struct eventfs_file *ef;
+	struct dentry *ret = NULL;
+	struct rw_semaphore *eventfs_rwsem;
+
+	ti = get_tracefs(dir);
+	if (!(ti->flags & TRACEFS_EVENT_INODE))
+		return NULL;
+
+	ei = ti->private;
+	eventfs_rwsem = (struct rw_semaphore *) dir->i_private;
+	eventfs_down_read(eventfs_rwsem);
+	list_for_each_entry(ef, &ei->e_top_files, list) {
+		if (strcmp(ef->name, dentry->d_name.name))
+			continue;
+		ret = simple_lookup(dir, dentry, flags);
+		if (ef->created)
+			continue;
+		ef->created = true;
+		if (ef->ei)
+			ef->dentry = eventfs_create_dir(ef->name, ef->mode, ef->d_parent,
+							ef->data, ef->fop, ef->iop);
+		else
+			ef->dentry = eventfs_create_file(ef->name, ef->mode, ef->d_parent,
+							 ef->data, ef->fop);
+
+		if (IS_ERR_OR_NULL(ef->dentry)) {
+			ef->created = false;
+		} else {
+			if (ef->ei)
+				eventfs_post_create_dir(ef);
+			ef->dentry->d_fsdata = ef;
+			dput(ef->dentry);
+		}
+		break;
+	}
+	eventfs_up_read(eventfs_rwsem);
+	return ret;
+}
+
+/**
+ * eventfs_release - called to release eventfs file/dir
+ * @inode: inode to be released
+ * @file: file to be released (not used)
+ */
+static int eventfs_release(struct inode *inode, struct file *file)
+{
+	struct tracefs_inode *ti;
+	struct eventfs_inode *ei;
+	struct eventfs_file *ef;
+	struct dentry *dentry = file_dentry(file);
+	struct rw_semaphore *eventfs_rwsem;
+
+	ti = get_tracefs(inode);
+	if (!(ti->flags & TRACEFS_EVENT_INODE))
+		return -EINVAL;
+
+	ei = ti->private;
+	eventfs_rwsem = eventfs_dentry_to_rwsem(dentry);
+	eventfs_down_read(eventfs_rwsem);
+	list_for_each_entry(ef, &ei->e_top_files, list) {
+		if (ef->created)
+			dput(ef->dentry);
+	}
+	eventfs_up_read(eventfs_rwsem);
+	return dcache_dir_close(inode, file);
+}
+
+/**
+ * dcache_dir_open_wrapper - eventfs open wrapper
+ * @inode: not used
+ * @file: dir to be opened (to create it's child)
+ *
+ * Used to dynamic create file/dir with-in @file, all the
+ * file/dir will be created. If already created then reference
+ * will be increased
+ */
+static int dcache_dir_open_wrapper(struct inode *inode, struct file *file)
+{
+	struct tracefs_inode *ti;
+	struct eventfs_inode *ei;
+	struct eventfs_file *ef;
+	struct inode *f_inode = file_inode(file);
+	struct dentry *dentry = file_dentry(file);
+	struct rw_semaphore *eventfs_rwsem;
+
+	ti = get_tracefs(f_inode);
+	if (!(ti->flags & TRACEFS_EVENT_INODE))
+		return -EINVAL;
+
+	ei = ti->private;
+	eventfs_rwsem = eventfs_dentry_to_rwsem(dentry);
+	eventfs_down_read(eventfs_rwsem);
+	list_for_each_entry(ef, &ei->e_top_files, list) {
+		if (ef->created) {
+			dget(ef->dentry);
+			continue;
+		}
+
+		ef->created = true;
+
+		inode_lock(dentry->d_inode);
+		if (ef->ei)
+			ef->dentry = eventfs_create_dir(ef->name, ef->mode, dentry,
+							ef->data, ef->fop, ef->iop);
+		else
+			ef->dentry = eventfs_create_file(ef->name, ef->mode, dentry,
+							 ef->data, ef->fop);
+		inode_unlock(dentry->d_inode);
+
+		if (IS_ERR_OR_NULL(ef->dentry)) {
+			ef->created = false;
+		} else {
+			if (ef->ei)
+				eventfs_post_create_dir(ef);
+			ef->dentry->d_fsdata = ef;
+		}
+	}
+	eventfs_up_read(eventfs_rwsem);
+	return dcache_dir_open(inode, file);
+}
+
 static const struct file_operations eventfs_file_operations = {
+	.open           = dcache_dir_open_wrapper,
+	.read		= generic_read_dir,
+	.iterate_shared	= dcache_readdir,
+	.llseek		= generic_file_llseek,
+	.release        = eventfs_release,
 };
 
 static const struct inode_operations eventfs_root_dir_inode_operations = {
+	.lookup		= eventfs_root_lookup,
 };
 
 /**
