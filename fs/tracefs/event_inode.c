@@ -270,3 +270,97 @@ struct eventfs_file *eventfs_add_dir(const char *name,
 	eventfs_up_write(eventfs_rwsem);
 	return ef;
 }
+
+/**
+ * eventfs_add_top_file - add event top file to list to create later
+ * @name: a pointer to a string containing the name of the file to create.
+ * @mode: the permission that the file should have.
+ * @parent: a pointer to the parent dentry for this file.  This should be a
+ *          directory dentry if set.  If this parameter is NULL, then the
+ *          file will be created in the root of the tracefs filesystem.
+ * @data: a pointer to something that the caller will want to get to later
+ *        on.  The inode.i_private pointer will point to this value on
+ *        the open() call.
+ * @fop: a pointer to a struct file_operations that should be used for
+ *        this file.
+ *
+ * This function adds top files of event dir to list.
+ * And all these files are created on the fly when they are looked up,
+ * and the dentry and inodes will be removed when they are done.
+ */
+int eventfs_add_top_file(const char *name, umode_t mode,
+			 struct dentry *parent, void *data,
+			 const struct file_operations *fop)
+{
+	struct tracefs_inode *ti;
+	struct eventfs_inode *ei;
+	struct eventfs_file *ef;
+	struct rw_semaphore *eventfs_rwsem;
+
+	if (!parent)
+		return -EINVAL;
+
+	if (!(mode & S_IFMT))
+		mode |= S_IFREG;
+
+	if (!parent->d_inode)
+		return -EINVAL;
+
+	ti = get_tracefs(parent->d_inode);
+	if (!(ti->flags & TRACEFS_EVENT_INODE))
+		return -EINVAL;
+
+	ei = ti->private;
+	ef = eventfs_prepare_ef(name, mode, fop, NULL, data);
+
+	if (IS_ERR(ef))
+		return -ENOMEM;
+
+	eventfs_rwsem = (struct rw_semaphore *) parent->d_inode->i_private;
+	eventfs_down_write(eventfs_rwsem);
+	list_add_tail(&ef->list, &ei->e_top_files);
+	ef->d_parent = parent;
+	eventfs_up_write(eventfs_rwsem);
+	return 0;
+}
+
+/**
+ * eventfs_add_file - add eventfs file to list to create later
+ * @name: a pointer to a string containing the name of the file to create.
+ * @mode: the permission that the file should have.
+ * @ef_parent: a pointer to the parent eventfs_file for this file.
+ * @data: a pointer to something that the caller will want to get to later
+ *        on.  The inode.i_private pointer will point to this value on
+ *        the open() call.
+ * @fop: a pointer to a struct file_operations that should be used for
+ *        this file.
+ *
+ * This function adds top files of event dir to list.
+ * And all these files are created on the fly when they are looked up,
+ * and the dentry and inodes will be removed when they are done.
+ */
+int eventfs_add_file(const char *name, umode_t mode,
+		     struct eventfs_file *ef_parent,
+		     void *data,
+		     const struct file_operations *fop)
+{
+	struct eventfs_file *ef;
+	struct rw_semaphore *eventfs_rwsem;
+
+	if (!ef_parent)
+		return -EINVAL;
+
+	if (!(mode & S_IFMT))
+		mode |= S_IFREG;
+
+	ef = eventfs_prepare_ef(name, mode, fop, NULL, data);
+	if (IS_ERR(ef))
+		return -ENOMEM;
+
+	eventfs_rwsem = (struct rw_semaphore *) ef_parent->data;
+	eventfs_down_write(eventfs_rwsem);
+	list_add_tail(&ef->list, &ef_parent->ei->e_top_files);
+	ef->d_parent = ef_parent->dentry;
+	eventfs_up_write(eventfs_rwsem);
+	return 0;
+}
