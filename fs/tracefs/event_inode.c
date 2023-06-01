@@ -364,3 +364,81 @@ int eventfs_add_file(const char *name, umode_t mode,
 	eventfs_up_write(eventfs_rwsem);
 	return 0;
 }
+
+/**
+ * eventfs_remove_rec - remove eventfs dir or file from list
+ * @ef: a pointer to eventfs_file to be removed.
+ *
+ * This function recursively remove eventfs_file which
+ * contains info of file or dir.
+ */
+static void eventfs_remove_rec(struct eventfs_file *ef)
+{
+	struct eventfs_file *ef_child, *n;
+
+	if (!ef)
+		return;
+
+	if (ef->ei) {
+		/* search for nested folders or files */
+		list_for_each_entry_safe(ef_child, n, &ef->ei->e_top_files, list) {
+			eventfs_remove_rec(ef_child);
+		}
+		kfree(ef->ei);
+	}
+
+	if (ef->created && ef->dentry) {
+		d_invalidate(ef->dentry);
+		dput(ef->dentry);
+	}
+	list_del(&ef->list);
+	kfree(ef->name);
+	kfree(ef);
+}
+
+/**
+ * eventfs_remove - remove eventfs dir or file from list
+ * @ef: a pointer to eventfs_file to be removed.
+ *
+ * This function acquire the eventfs_rwsem lock and call eventfs_remove_rec()
+ */
+void eventfs_remove(struct eventfs_file *ef)
+{
+	struct rw_semaphore *eventfs_rwsem;
+
+	if (!ef)
+		return;
+
+	if (ef->ei)
+		eventfs_rwsem = (struct rw_semaphore *) ef->data;
+	else
+		eventfs_rwsem = (struct rw_semaphore *) ef->d_parent->d_inode->i_private;
+
+	eventfs_down_write(eventfs_rwsem);
+	eventfs_remove_rec(ef);
+	eventfs_up_write(eventfs_rwsem);
+}
+
+/**
+ * eventfs_remove_events_dir - remove eventfs dir or file from list
+ * @dentry: a pointer to events's dentry to be removed.
+ *
+ * This function remove events main directory
+ */
+void eventfs_remove_events_dir(struct dentry *dentry)
+{
+	struct tracefs_inode *ti;
+	struct eventfs_inode *ei;
+
+	if (!dentry || !dentry->d_inode)
+		return;
+
+	ti = get_tracefs(dentry->d_inode);
+	if (!ti || !(ti->flags & TRACEFS_EVENT_INODE))
+		return;
+
+	ei = ti->private;
+	d_invalidate(dentry);
+	dput(dentry);
+	kfree(ei);
+}
