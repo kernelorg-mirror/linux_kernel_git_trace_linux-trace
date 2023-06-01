@@ -38,6 +38,12 @@ struct eventfs_file {
 	bool                            created;
 };
 
+struct dentry *eventfs_start_creating(const char *name, struct dentry *parent);
+
+struct dentry *eventfs_failed_creating(struct dentry *dentry);
+
+struct dentry *eventfs_end_creating(struct dentry *dentry);
+
 struct dentry *eventfs_create_events_dir(const char *name,
 					 struct dentry *parent,
 					 struct rw_semaphore *eventfs_rwsem);
