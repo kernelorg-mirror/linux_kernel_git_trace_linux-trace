@@ -619,6 +619,8 @@ bool oops_may_print(void)
  */
 void oops_enter(void)
 {
+	trace_printk("Panic oops\n");
+	trace_dump_stack(0);
 	tracing_off();
 	/* can't trust the integrity of the kernel anymore: */
 	debug_locks_off();

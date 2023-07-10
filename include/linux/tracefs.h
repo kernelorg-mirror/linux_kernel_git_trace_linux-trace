@@ -21,22 +21,7 @@ struct file_operations;
 
 #ifdef CONFIG_TRACING
 
-struct eventfs_inode {
-	struct list_head		e_top_files;
-};
-
-struct eventfs_file {
-	const char                      *name;
-	struct dentry                   *d_parent;
-	struct dentry                   *dentry;
-	struct list_head                list;
-	struct eventfs_inode            *ei;
-	const struct file_operations    *fop;
-	const struct inode_operations   *iop;
-	void                            *data;
-	umode_t                         mode;
-	bool                            created;
-};
+struct eventfs_file;
 
 struct dentry *eventfs_start_creating(const char *name, struct dentry *parent);
 
@@ -45,16 +30,13 @@ struct dentry *eventfs_failed_creating(struct dentry *dentry);
 struct dentry *eventfs_end_creating(struct dentry *dentry);
 
 struct dentry *eventfs_create_events_dir(const char *name,
-					 struct dentry *parent,
-					 struct rw_semaphore *eventfs_rwsem);
+					 struct dentry *parent);
 
 struct eventfs_file *eventfs_add_subsystem_dir(const char *name,
-					       struct dentry *parent,
-					       struct rw_semaphore *eventfs_rwsem);
+					       struct dentry *parent);
 
 struct eventfs_file *eventfs_add_dir(const char *name,
-				     struct eventfs_file *ef_parent,
-				     struct rw_semaphore *eventfs_rwsem);
+				     struct eventfs_file *ef_parent);
 
 int eventfs_add_file(const char *name, umode_t mode,
 		     struct eventfs_file *ef_parent, void *data,

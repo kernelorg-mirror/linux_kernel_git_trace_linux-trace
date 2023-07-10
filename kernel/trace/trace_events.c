@@ -2337,7 +2337,7 @@ event_subsystem_dir(struct trace_array *tr, const char *name,
 	} else
 		__get_system(system);
 
-	dir->ef = eventfs_add_subsystem_dir(name, parent, &tr->eventfs_rwsem);
+	dir->ef = eventfs_add_subsystem_dir(name, parent);
 	if (IS_ERR(dir->ef)) {
 		pr_warn("Failed to create system directory %s\n", name);
 		__put_system(system);
@@ -2439,7 +2439,7 @@ event_create_dir(struct dentry *parent, struct trace_event_file *file)
 		return -ENOMEM;
 
 	name = trace_event_name(call);
-	file->ef = eventfs_add_dir(name, ef_subsystem, &tr->eventfs_rwsem);
+	file->ef = eventfs_add_dir(name, ef_subsystem);
 	if (IS_ERR(file->ef)) {
 		pr_warn("Could not create tracefs '%s' directory\n", name);
 		return -1;
@@ -3647,7 +3647,7 @@ create_event_toplevel_files(struct dentry *parent, struct trace_array *tr)
 	if (!entry)
 		return -ENOMEM;
 
-	d_events = eventfs_create_events_dir("events", parent, &tr->eventfs_rwsem);
+	d_events = eventfs_create_events_dir("events", parent);
 	if (IS_ERR(d_events)) {
 		pr_warn("Could not create tracefs 'events' directory\n");
 		return -ENOMEM;

@@ -16,71 +16,69 @@
 #include <linux/fsnotify.h>
 #include <linux/fs.h>
 #include <linux/namei.h>
+#include <linux/workqueue.h>
 #include <linux/security.h>
 #include <linux/tracefs.h>
 #include <linux/kref.h>
 #include <linux/delay.h>
 #include "internal.h"
 
-/**
- * eventfs_dentry_to_rwsem - Return corresponding eventfs_rwsem
- * @dentry: a pointer to dentry
- *
- * helper function to return crossponding eventfs_rwsem for given dentry
- */
-static struct rw_semaphore *eventfs_dentry_to_rwsem(struct dentry *dentry)
-{
-	if (S_ISDIR(dentry->d_inode->i_mode))
-		return (struct rw_semaphore *)dentry->d_inode->i_private;
-	else
-		return (struct rw_semaphore *)dentry->d_parent->d_inode->i_private;
-}
+struct eventfs_inode {
+	struct list_head		e_top_files;
+};
 
-/**
- * eventfs_down_read - acquire read lock function
- * @eventfs_rwsem: a pointer to rw_semaphore
- *
- * helper function to perform read lock. Nested locking requires because
- * lookup(), release() requires read lock, these could be called directly
- * or from open(), remove() which already hold the read/write lock.
- */
-static void eventfs_down_read(struct rw_semaphore *eventfs_rwsem)
-{
-	down_read_nested(eventfs_rwsem, SINGLE_DEPTH_NESTING);
-}
+struct eventfs_file {
+	const char                      *name;
+	struct dentry                   *d_parent;
+	struct dentry                   *dentry;
+	struct list_head                list;
+	struct eventfs_inode            *ei;
+	const struct file_operations    *fop;
+	const struct inode_operations   *iop;
+	union {
+		struct rcu_head		rcu;
+		struct llist_node	llist;	/* For freeing after RCU */
+	};
+	void                            *data;
+	umode_t                         mode;
+	bool                            created;
+};
 
-/**
- * eventfs_up_read - release read lock function
- * @eventfs_rwsem: a pointer to rw_semaphore
- *
- * helper function to release eventfs_rwsem lock if locked
- */
-static void eventfs_up_read(struct rw_semaphore *eventfs_rwsem)
-{
-	up_read(eventfs_rwsem);
-}
+static DEFINE_MUTEX(eventfs_mutex);
+DEFINE_STATIC_SRCU(eventfs_srcu);
 
-/**
- * eventfs_down_write - acquire write lock function
- * @eventfs_rwsem: a pointer to rw_semaphore
- *
- * helper function to perform write lock on eventfs_rwsem
- */
-static void eventfs_down_write(struct rw_semaphore *eventfs_rwsem)
+static struct dentry *create_file(const char *name, umode_t mode,
+				  struct dentry *parent, void *data,
+				  const struct file_operations *fop)
 {
-	while (!down_write_trylock(eventfs_rwsem))
-		msleep(10);
-}
+	struct tracefs_inode *ti;
+	struct dentry *dentry;
+	struct inode *inode;
 
-/**
- * eventfs_up_write - release write lock function
- * @eventfs_rwsem: a pointer to rw_semaphore
- *
- * helper function to perform write lock on eventfs_rwsem
- */
-static void eventfs_up_write(struct rw_semaphore *eventfs_rwsem)
-{
-	up_write(eventfs_rwsem);
+	if (!(mode & S_IFMT))
+		mode |= S_IFREG;
+
+	if (WARN_ON_ONCE(!S_ISREG(mode)))
+		return NULL;
+
+	dentry = eventfs_start_creating(name, parent);
+
+	if (IS_ERR(dentry))
+		return dentry;
+
+	inode = tracefs_get_inode(dentry->d_sb);
+	if (unlikely(!inode))
+		return eventfs_failed_creating(dentry);
+
+	inode->i_mode = mode;
+	inode->i_fop = fop;
+	inode->i_private = data;
+
+	ti = get_tracefs(inode);
+	ti->flags |= TRACEFS_EVENT_INODE;
+	d_instantiate(dentry, inode);
+	fsnotify_create(dentry->d_parent->d_inode, dentry);
+	return eventfs_end_creating(dentry);
 }
 
 /**
@@ -111,21 +109,30 @@ static struct dentry *eventfs_create_file(const char *name, umode_t mode,
 					  struct dentry *parent, void *data,
 					  const struct file_operations *fop)
 {
-	struct tracefs_inode *ti;
 	struct dentry *dentry;
-	struct inode *inode;
 
 	if (security_locked_down(LOCKDOWN_TRACEFS))
 		return NULL;
 
-	if (!(mode & S_IFMT))
-		mode |= S_IFREG;
+	mutex_lock(&eventfs_mutex);
+	dentry = create_file(name, mode, parent, data, fop);
+	mutex_unlock(&eventfs_mutex);
 
-	if (WARN_ON_ONCE(!S_ISREG(mode)))
-		return NULL;
+	return dentry;
+}
+
+static struct dentry *create_dir(const char *name, umode_t mode,
+				 struct dentry *parent, void *data,
+				 const struct file_operations *fop,
+				 const struct inode_operations *iop)
+{
+	struct tracefs_inode *ti;
+	struct dentry *dentry;
+	struct inode *inode;
+
+	WARN_ON(!S_ISDIR(mode));
 
 	dentry = eventfs_start_creating(name, parent);
-
 	if (IS_ERR(dentry))
 		return dentry;
 
@@ -134,13 +141,17 @@ static struct dentry *eventfs_create_file(const char *name, umode_t mode,
 		return eventfs_failed_creating(dentry);
 
 	inode->i_mode = mode;
+	inode->i_op = iop;
 	inode->i_fop = fop;
 	inode->i_private = data;
 
 	ti = get_tracefs(inode);
 	ti->flags |= TRACEFS_EVENT_INODE;
+
+	inc_nlink(inode);
 	d_instantiate(dentry, inode);
-	fsnotify_create(dentry->d_parent->d_inode, dentry);
+	inc_nlink(dentry->d_parent->d_inode);
+	fsnotify_mkdir(dentry->d_parent->d_inode, dentry);
 	return eventfs_end_creating(dentry);
 }
 
@@ -175,37 +186,18 @@ static struct dentry *eventfs_create_dir(const char *name, umode_t mode,
 					 const struct file_operations *fop,
 					 const struct inode_operations *iop)
 {
-	struct tracefs_inode *ti;
 	struct dentry *dentry;
-	struct inode *inode;
 
 	if (security_locked_down(LOCKDOWN_TRACEFS))
 		return NULL;
 
 	WARN_ON(!S_ISDIR(mode));
 
-	dentry = eventfs_start_creating(name, parent);
+	mutex_lock(&eventfs_mutex);
+	dentry = create_dir(name, mode, parent, data, fop, iop);
+	mutex_unlock(&eventfs_mutex);
 
-	if (IS_ERR(dentry))
-		return dentry;
-
-	inode = tracefs_get_inode(dentry->d_sb);
-	if (unlikely(!inode))
-		return eventfs_failed_creating(dentry);
-
-	inode->i_mode = mode;
-	inode->i_op = iop;
-	inode->i_fop = fop;
-	inode->i_private = data;
-
-	ti = get_tracefs(inode);
-	ti->flags |= TRACEFS_EVENT_INODE;
-
-	inc_nlink(inode);
-	d_instantiate(dentry, inode);
-	inc_nlink(dentry->d_parent->d_inode);
-	fsnotify_mkdir(dentry->d_parent->d_inode, dentry);
-	return eventfs_end_creating(dentry);
+	return dentry;
 }
 
 /**
@@ -241,13 +233,14 @@ static void eventfs_post_create_dir(struct eventfs_file *ef)
 {
 	struct eventfs_file *ef_child;
 	struct tracefs_inode *ti;
+	int idx;
 
-	eventfs_down_read((struct rw_semaphore *) ef->data);
+	/* srcu lock already held */
 	/* fill parent-child relation */
-	list_for_each_entry(ef_child, &ef->ei->e_top_files, list) {
+	list_for_each_entry_srcu(ef_child, &ef->ei->e_top_files, list,
+				 srcu_read_lock_held(&eventfs_srcu)) {
 		ef_child->d_parent = ef->dentry;
 	}
-	eventfs_up_read((struct rw_semaphore *) ef->data);
 
 	ti = get_tracefs(ef->dentry->d_inode);
 	ti->private = ef->ei;
@@ -271,40 +264,43 @@ static struct dentry *eventfs_root_lookup(struct inode *dir,
 	struct eventfs_inode *ei;
 	struct eventfs_file *ef;
 	struct dentry *ret = NULL;
-	struct rw_semaphore *eventfs_rwsem;
+	int idx;
 
 	ti = get_tracefs(dir);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
 		return NULL;
 
 	ei = ti->private;
-	eventfs_rwsem = (struct rw_semaphore *) dir->i_private;
-	eventfs_down_read(eventfs_rwsem);
-	list_for_each_entry(ef, &ei->e_top_files, list) {
+	idx = srcu_read_lock(&eventfs_srcu);
+	list_for_each_entry_srcu(ef, &ei->e_top_files, list,
+				 srcu_read_lock_held(&eventfs_srcu)) {
 		if (strcmp(ef->name, dentry->d_name.name))
 			continue;
 		ret = simple_lookup(dir, dentry, flags);
 		if (ef->created)
 			continue;
+		mutex_lock(&eventfs_mutex);
 		ef->created = true;
 		if (ef->ei)
-			ef->dentry = eventfs_create_dir(ef->name, ef->mode, ef->d_parent,
-							ef->data, ef->fop, ef->iop);
+			ef->dentry = create_dir(ef->name, ef->mode, ef->d_parent,
+						ef->data, ef->fop, ef->iop);
 		else
-			ef->dentry = eventfs_create_file(ef->name, ef->mode, ef->d_parent,
-							 ef->data, ef->fop);
+			ef->dentry = create_file(ef->name, ef->mode, ef->d_parent,
+						 ef->data, ef->fop);
 
 		if (IS_ERR_OR_NULL(ef->dentry)) {
 			ef->created = false;
+			mutex_unlock(&eventfs_mutex);
 		} else {
 			if (ef->ei)
 				eventfs_post_create_dir(ef);
 			ef->dentry->d_fsdata = ef;
+			mutex_unlock(&eventfs_mutex);
 			dput(ef->dentry);
 		}
 		break;
 	}
-	eventfs_up_read(eventfs_rwsem);
+	srcu_read_unlock(&eventfs_srcu, idx);
 	return ret;
 }
 
@@ -318,21 +314,20 @@ static int eventfs_release(struct inode *inode, struct file *file)
 	struct tracefs_inode *ti;
 	struct eventfs_inode *ei;
 	struct eventfs_file *ef;
-	struct dentry *dentry = file_dentry(file);
-	struct rw_semaphore *eventfs_rwsem;
+	int idx;
 
 	ti = get_tracefs(inode);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
 		return -EINVAL;
 
 	ei = ti->private;
-	eventfs_rwsem = eventfs_dentry_to_rwsem(dentry);
-	eventfs_down_read(eventfs_rwsem);
-	list_for_each_entry(ef, &ei->e_top_files, list) {
+	idx = srcu_read_lock(&eventfs_srcu);
+	list_for_each_entry_srcu(ef, &ei->e_top_files, list,
+				 srcu_read_lock_held(&eventfs_srcu)) {
 		if (ef->created)
 			dput(ef->dentry);
 	}
-	eventfs_up_read(eventfs_rwsem);
+	srcu_read_unlock(&eventfs_srcu, idx);
 	return dcache_dir_close(inode, file);
 }
 
@@ -352,30 +347,30 @@ static int dcache_dir_open_wrapper(struct inode *inode, struct file *file)
 	struct eventfs_file *ef;
 	struct inode *f_inode = file_inode(file);
 	struct dentry *dentry = file_dentry(file);
-	struct rw_semaphore *eventfs_rwsem;
+	int idx;
 
 	ti = get_tracefs(f_inode);
 	if (!(ti->flags & TRACEFS_EVENT_INODE))
 		return -EINVAL;
 
 	ei = ti->private;
-	eventfs_rwsem = eventfs_dentry_to_rwsem(dentry);
-	eventfs_down_read(eventfs_rwsem);
-	list_for_each_entry(ef, &ei->e_top_files, list) {
+	idx = srcu_read_lock(&eventfs_srcu);
+	list_for_each_entry_rcu(ef, &ei->e_top_files, list) {
 		if (ef->created) {
 			dget(ef->dentry);
 			continue;
 		}
 
+		mutex_lock(&eventfs_mutex);
 		ef->created = true;
 
 		inode_lock(dentry->d_inode);
 		if (ef->ei)
-			ef->dentry = eventfs_create_dir(ef->name, ef->mode, dentry,
-							ef->data, ef->fop, ef->iop);
+			ef->dentry = create_dir(ef->name, ef->mode, dentry,
+						ef->data, ef->fop, ef->iop);
 		else
-			ef->dentry = eventfs_create_file(ef->name, ef->mode, dentry,
-							 ef->data, ef->fop);
+			ef->dentry = create_file(ef->name, ef->mode, dentry,
+						 ef->data, ef->fop);
 		inode_unlock(dentry->d_inode);
 
 		if (IS_ERR_OR_NULL(ef->dentry)) {
@@ -385,8 +380,9 @@ static int dcache_dir_open_wrapper(struct inode *inode, struct file *file)
 				eventfs_post_create_dir(ef);
 			ef->dentry->d_fsdata = ef;
 		}
+		mutex_unlock(&eventfs_mutex);
 	}
-	eventfs_up_read(eventfs_rwsem);
+	srcu_read_unlock(&eventfs_srcu, idx);
 	return dcache_dir_open(inode, file);
 }
 
@@ -463,13 +459,11 @@ static struct eventfs_file *eventfs_prepare_ef(const char *name, umode_t mode,
  * @parent: a pointer to the parent dentry for this file.  This should be a
  *          directory dentry if set.  If this parameter is NULL, then the
  *          directory will be created in the root of the tracefs filesystem.
- * @eventfs_rwsem: a pointer to rw_semaphore
  *
  * This function creates the top of the trace event directory.
  */
 struct dentry *eventfs_create_events_dir(const char *name,
-					 struct dentry *parent,
-					 struct rw_semaphore *eventfs_rwsem)
+					 struct dentry *parent)
 {
 	struct dentry *dentry = tracefs_start_creating(name, parent);
 	struct eventfs_inode *ei;
@@ -489,7 +483,6 @@ struct dentry *eventfs_create_events_dir(const char *name,
 		return ERR_PTR(-ENOMEM);
 	}
 
-	init_rwsem(eventfs_rwsem);
 	INIT_LIST_HEAD(&ei->e_top_files);
 
 	ti = get_tracefs(inode);
@@ -499,7 +492,6 @@ struct dentry *eventfs_create_events_dir(const char *name,
 	inode->i_mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
 	inode->i_op = &eventfs_root_dir_inode_operations;
 	inode->i_fop = &eventfs_file_operations;
-	inode->i_private = eventfs_rwsem;
 
 	/* directory inodes start off with i_nlink == 2 (for "." entry) */
 	inc_nlink(inode);
@@ -513,15 +505,13 @@ struct dentry *eventfs_create_events_dir(const char *name,
  * eventfs_add_subsystem_dir - add eventfs subsystem_dir to list to create later
  * @name: a pointer to a string containing the name of the file to create.
  * @parent: a pointer to the parent dentry for this dir.
- * @eventfs_rwsem: a pointer to rw_semaphore
  *
  * This function adds eventfs subsystem dir to list.
  * And all these dirs are created on the fly when they are looked up,
  * and the dentry and inodes will be removed when they are done.
  */
 struct eventfs_file *eventfs_add_subsystem_dir(const char *name,
-					       struct dentry *parent,
-					       struct rw_semaphore *eventfs_rwsem)
+					       struct dentry *parent)
 {
 	struct tracefs_inode *ti_parent;
 	struct eventfs_inode *ei_parent;
@@ -536,16 +526,15 @@ struct eventfs_file *eventfs_add_subsystem_dir(const char *name,
 	ef = eventfs_prepare_ef(name,
 		S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
 		&eventfs_file_operations,
-		&eventfs_root_dir_inode_operations,
-		(void *) eventfs_rwsem);
+		&eventfs_root_dir_inode_operations, NULL);
 
 	if (IS_ERR(ef))
 		return ef;
 
-	eventfs_down_write(eventfs_rwsem);
+	mutex_lock(&eventfs_mutex);
 	list_add_tail(&ef->list, &ei_parent->e_top_files);
 	ef->d_parent = parent;
-	eventfs_up_write(eventfs_rwsem);
+	mutex_unlock(&eventfs_mutex);
 	return ef;
 }
 
@@ -553,15 +542,13 @@ struct eventfs_file *eventfs_add_subsystem_dir(const char *name,
  * eventfs_add_dir - add eventfs dir to list to create later
  * @name: a pointer to a string containing the name of the file to create.
  * @ef_parent: a pointer to the parent eventfs_file for this dir.
- * @eventfs_rwsem: a pointer to rw_semaphore
  *
  * This function adds eventfs dir to list.
  * And all these dirs are created on the fly when they are looked up,
  * and the dentry and inodes will be removed when they are done.
  */
 struct eventfs_file *eventfs_add_dir(const char *name,
-				     struct eventfs_file *ef_parent,
-				     struct rw_semaphore *eventfs_rwsem)
+				     struct eventfs_file *ef_parent)
 {
 	struct eventfs_file *ef;
 
@@ -571,16 +558,15 @@ struct eventfs_file *eventfs_add_dir(const char *name,
 	ef = eventfs_prepare_ef(name,
 		S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
 		&eventfs_file_operations,
-		&eventfs_root_dir_inode_operations,
-		(void *) eventfs_rwsem);
+		&eventfs_root_dir_inode_operations, NULL);
 
 	if (IS_ERR(ef))
 		return ef;
 
-	eventfs_down_write(eventfs_rwsem);
+	mutex_lock(&eventfs_mutex);
 	list_add_tail(&ef->list, &ef_parent->ei->e_top_files);
 	ef->d_parent = ef_parent->dentry;
-	eventfs_up_write(eventfs_rwsem);
+	mutex_unlock(&eventfs_mutex);
 	return ef;
 }
 
@@ -608,7 +594,6 @@ int eventfs_add_top_file(const char *name, umode_t mode,
 	struct tracefs_inode *ti;
 	struct eventfs_inode *ei;
 	struct eventfs_file *ef;
-	struct rw_semaphore *eventfs_rwsem;
 
 	if (!parent)
 		return -EINVAL;
@@ -629,11 +614,10 @@ int eventfs_add_top_file(const char *name, umode_t mode,
 	if (IS_ERR(ef))
 		return -ENOMEM;
 
-	eventfs_rwsem = (struct rw_semaphore *) parent->d_inode->i_private;
-	eventfs_down_write(eventfs_rwsem);
+	mutex_lock(&eventfs_mutex);
 	list_add_tail(&ef->list, &ei->e_top_files);
 	ef->d_parent = parent;
-	eventfs_up_write(eventfs_rwsem);
+	mutex_unlock(&eventfs_mutex);
 	return 0;
 }
 
@@ -658,7 +642,6 @@ int eventfs_add_file(const char *name, umode_t mode,
 		     const struct file_operations *fop)
 {
 	struct eventfs_file *ef;
-	struct rw_semaphore *eventfs_rwsem;
 
 	if (!ef_parent)
 		return -EINVAL;
@@ -670,12 +653,40 @@ int eventfs_add_file(const char *name, umode_t mode,
 	if (IS_ERR(ef))
 		return -ENOMEM;
 
-	eventfs_rwsem = (struct rw_semaphore *) ef_parent->data;
-	eventfs_down_write(eventfs_rwsem);
+	mutex_lock(&eventfs_mutex);
 	list_add_tail(&ef->list, &ef_parent->ei->e_top_files);
 	ef->d_parent = ef_parent->dentry;
-	eventfs_up_write(eventfs_rwsem);
+	mutex_unlock(&eventfs_mutex);
 	return 0;
+}
+
+static LLIST_HEAD(free_list);
+
+static void eventfs_workfn(struct work_struct *work)
+{
+	struct eventfs_file *ef, *tmp;
+	struct llist_node *llnode;
+
+	llnode = llist_del_all(&free_list);
+	llist_for_each_entry_safe(ef, tmp, llnode, llist) {
+		if (ef->created && ef->dentry)
+			dput(ef->dentry);
+		kfree(ef->name);
+		kfree(ef->ei);
+		kfree(ef);
+	}
+}
+
+DECLARE_WORK(eventfs_work, eventfs_workfn);
+
+static void free_ef(struct rcu_head *head)
+{
+	struct eventfs_file *ef = container_of(head, struct eventfs_file, rcu);
+
+	if (!llist_add(&ef->llist, &free_list))
+		return;
+
+	queue_work(system_unbound_wq, &eventfs_work);
 }
 
 /**
@@ -685,51 +696,51 @@ int eventfs_add_file(const char *name, umode_t mode,
  * This function recursively remove eventfs_file which
  * contains info of file or dir.
  */
-static void eventfs_remove_rec(struct eventfs_file *ef)
+static void eventfs_remove_rec(struct eventfs_file *ef, int level)
 {
-	struct eventfs_file *ef_child, *n;
+	struct eventfs_file *ef_child;
 
 	if (!ef)
+		return;
+	/*
+	 * Check recursion depth. It should never be greater than 3:
+	 * 0 - events/
+	 * 1 - events/group/
+	 * 2 - events/group/event/
+	 * 3 - events/group/event/file
+	 */
+	if (WARN_ON_ONCE(level > 3))
 		return;
 
 	if (ef->ei) {
 		/* search for nested folders or files */
-		list_for_each_entry_safe(ef_child, n, &ef->ei->e_top_files, list) {
-			eventfs_remove_rec(ef_child);
+		list_for_each_entry_srcu(ef_child, &ef->ei->e_top_files, list,
+					 lockdep_is_held(&eventfs_mutex)) {
+			eventfs_remove_rec(ef_child, level + 1);
 		}
-		kfree(ef->ei);
 	}
 
-	if (ef->created && ef->dentry) {
+	if (ef->created && ef->dentry)
 		d_invalidate(ef->dentry);
-		dput(ef->dentry);
-	}
-	list_del(&ef->list);
-	kfree(ef->name);
-	kfree(ef);
+
+	list_del_rcu(&ef->list);
+	call_srcu(&eventfs_srcu, &ef->rcu, free_ef);
 }
 
 /**
  * eventfs_remove - remove eventfs dir or file from list
  * @ef: a pointer to eventfs_file to be removed.
  *
- * This function acquire the eventfs_rwsem lock and call eventfs_remove_rec()
+ * This function acquire the eventfs_mutex lock and calls eventfs_remove_rec()
  */
 void eventfs_remove(struct eventfs_file *ef)
 {
-	struct rw_semaphore *eventfs_rwsem;
-
 	if (!ef)
 		return;
 
-	if (ef->ei)
-		eventfs_rwsem = (struct rw_semaphore *) ef->data;
-	else
-		eventfs_rwsem = (struct rw_semaphore *) ef->d_parent->d_inode->i_private;
-
-	eventfs_down_write(eventfs_rwsem);
-	eventfs_remove_rec(ef);
-	eventfs_up_write(eventfs_rwsem);
+	mutex_lock(&eventfs_mutex);
+	eventfs_remove_rec(ef, 0);
+	mutex_unlock(&eventfs_mutex);
 }
 
 /**

@@ -1508,6 +1508,8 @@ EXPORT_SYMBOL_GPL(tracing_off);
 void disable_trace_on_warning(void)
 {
 	if (__disable_trace_on_warning) {
+		printk("Disable tracing on warning\n");
+		trace_printk("Disable tracing!\n");
 		trace_array_printk_buf(global_trace.array_buffer.buffer, _THIS_IP_,
 			"Disabling tracing due to warning\n");
 		tracing_off();

@@ -6474,6 +6474,7 @@ static int ftrace_process_locs(struct module *mod,
 	struct ftrace_page *start_pg;
 	struct ftrace_page *pg;
 	struct dyn_ftrace *rec;
+	unsigned long skipped = 0;
 	unsigned long count;
 	unsigned long *p;
 	unsigned long addr;
@@ -6536,8 +6537,10 @@ static int ftrace_process_locs(struct module *mod,
 		 * object files to satisfy alignments.
 		 * Skip any NULL pointers.
 		 */
-		if (!addr)
+		if (!addr) {
+			skipped++;
 			continue;
+		}
 
 		end_offset = (pg->index+1) * sizeof(pg->records[0]);
 		if (end_offset > PAGE_SIZE << pg->order) {
@@ -6551,11 +6554,23 @@ static int ftrace_process_locs(struct module *mod,
 		rec->ip = addr;
 	}
 
-	/* We should have used all pages */
-	WARN_ON(pg->next);
-
 	/* Assign the last page to ftrace_pages */
 	ftrace_pages = pg;
+
+	/* We should have used all pages unless we skipped some */
+	if (pg->next) {
+		WARN_ON(!skipped);
+		while (ftrace_pages->next) {
+			pg = ftrace_pages->next;
+			ftrace_pages->next = pg->next;
+			if (pg->records) {
+				free_pages((unsigned long)pg->records, pg->order);
+				ftrace_number_of_pages -= 1 << pg->order;
+			}
+			kfree(pg);
+			ftrace_number_of_groups--;
+		}
+	}
 
 	/*
 	 * We only need to disable interrupts on start up

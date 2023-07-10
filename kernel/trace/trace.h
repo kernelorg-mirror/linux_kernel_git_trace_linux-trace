@@ -359,7 +359,6 @@ struct trace_array {
 	struct dentry		*options;
 	struct dentry		*percpu_dir;
 	struct dentry		*event_dir;
-	struct rw_semaphore     eventfs_rwsem;
 	struct trace_options	*topts;
 	struct list_head	systems;
 	struct list_head	events;
