@@ -3639,6 +3639,9 @@ create_event_toplevel_files(struct dentry *parent, struct trace_array *tr)
 		return -ENOMEM;
 	}
 
+	trace_create_file("show_events_dentries", TRACE_MODE_READ, parent, d_events,
+			  &eventfs_show_dentry_fops);
+
 	error = eventfs_add_events_file("enable", TRACE_MODE_WRITE, d_events,
 				  tr, &ftrace_tr_enable_fops);
 	if (error)
