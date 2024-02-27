@@ -7310,7 +7310,9 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 /* Used in tracing_mark_raw_write() as well */
 #define FAULTED_STR "<faulted>"
 #define FAULTED_SIZE (sizeof(FAULTED_STR) - 1) /* '\0' is already accounted for */
-
+#ifndef SHORT_MAX
+#define SHORT_MAX	((1<<15) - 1)
+#endif
 	if (tracing_disabled)
 		return -EINVAL;
 
@@ -7327,6 +7329,16 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	/* If less than "<faulted>", then make sure we can still add that */
 	if (cnt < FAULTED_SIZE)
 		size += FAULTED_SIZE - cnt;
+
+	/*
+	 * trace_print_print() uses vsprintf() to determine the size via
+	 * the precision format "%.*s" which can not be greater than
+	 * a signed short.
+	 */
+	if (size > SHORT_MAX) {
+		cnt -= size - SHORT_MAX;
+		goto again;
+	}
 
 	if (size > TRACE_SEQ_BUFFER_SIZE) {
 		cnt -= size - TRACE_SEQ_BUFFER_SIZE;
