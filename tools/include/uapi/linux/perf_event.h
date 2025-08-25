@@ -1282,6 +1282,11 @@ enum perf_bpf_event_type {
 #define PERF_MAX_STACK_DEPTH			127
 #define PERF_MAX_CONTEXTS_PER_STACK		  8
 
+/*
+ * The PERF_CONTEXT_USER_DEFERRED has two items (context and cookie)
+ */
+#define PERF_DEFERRED_ITEMS			2
+
 enum perf_callchain_context {
 	PERF_CONTEXT_HV				= (__u64)-32,
 	PERF_CONTEXT_KERNEL			= (__u64)-128,

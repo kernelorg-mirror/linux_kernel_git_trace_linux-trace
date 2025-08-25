@@ -8284,7 +8284,7 @@ static struct perf_callchain_entry __empty_callchain = { .nr = 0, };
  *      0 : if it performed the queuing
  *    < 0 : if it did not get queued.
  */
-static int deferred_request(struct perf_event *event)
+static int deferred_request(struct perf_event *event, u64 *defer_cookie)
 {
 	struct callback_head *work = &event->pending_unwind_work;
 	int pending;
@@ -8299,6 +8299,8 @@ static int deferred_request(struct perf_event *event)
 		return -EINVAL;
 
 	guard(irqsave)();
+
+	*defer_cookie = unwind_user_get_cookie();
 
 	/* callback already pending? */
 	pending = READ_ONCE(event->pending_unwind_callback);
@@ -8328,6 +8330,7 @@ perf_callchain(struct perf_event *event, struct pt_regs *regs)
 	bool crosstask = event->ctx->task && event->ctx->task != current;
 	const u32 max_stack = event->attr.sample_max_stack;
 	struct perf_callchain_entry *callchain;
+	u64 defer_cookie = 0;
 	/* perf currently only supports deferred in 64bit */
 	bool defer_user = IS_ENABLED(CONFIG_UNWIND_USER) && user &&
 			  event->attr.defer_callchain;
@@ -8343,15 +8346,15 @@ perf_callchain(struct perf_event *event, struct pt_regs *regs)
 		return &__empty_callchain;
 
 	if (defer_user) {
-		int ret = deferred_request(event);
+		int ret = deferred_request(event, &defer_cookie);
 		if (!ret)
 			local_inc(&event->ctx->nr_no_switch_fast);
 		else if (ret < 0)
-			defer_user = false;
+			defer_cookie = 0;
 	}
 
 	callchain = get_perf_callchain(regs, kernel, user, max_stack,
-				       crosstask, true, defer_user);
+				       crosstask, true, defer_cookie);
 
 	return callchain ?: &__empty_callchain;
 }
