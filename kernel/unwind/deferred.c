@@ -95,6 +95,27 @@ static u64 get_cookie(struct unwind_task_info *info)
 }
 
 /**
+ * unwind_user_get_cookie - Get the current user context cookie
+ *
+ * This is used to get a unique context cookie for the current task.
+ * Every time a task enters the kernel it has a new context. If
+ * a subsystem needs to have a unique identifier for that context for
+ * the current task, it can call this function to retrieve a unique
+ * cookie for that task context.
+ *
+ * Returns: A unque identifier for the current task user context.
+ */
+u64 unwind_user_get_cookie(void)
+{
+	struct unwind_task_info *info = &current->unwind_info;
+
+	guard(irqsave)();
+	/* Make sure to clear the info->id.id when exiting the kernel */
+	set_bit(UNWIND_USED_BIT, &info->unwind_mask);
+	return get_cookie(info);
+}
+
+/**
  * unwind_user_faultable - Produce a user stacktrace in faultable context
  * @trace: The descriptor that will store the user stacktrace
  *

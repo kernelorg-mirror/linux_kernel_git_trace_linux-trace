@@ -46,6 +46,8 @@ void unwind_deferred_cancel(struct unwind_work *work);
 
 void unwind_deferred_task_exit(struct task_struct *task);
 
+u64 unwind_user_get_cookie(void);
+
 static __always_inline void unwind_reset_info(void)
 {
 	struct unwind_task_info *info = &current->unwind_info;
@@ -80,6 +82,9 @@ static inline void unwind_deferred_cancel(struct unwind_work *work) {}
 
 static inline void unwind_deferred_task_exit(struct task_struct *task) {}
 static inline void unwind_reset_info(void) {}
+
+/* Must be non-zero */
+static inline u64 unwind_user_get_cookie(void) { return (u64)-1; }
 
 #endif /* !CONFIG_UNWIND_USER */
 
