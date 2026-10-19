@@ -238,7 +238,7 @@ instance_options() { # [instance-name]
 	fi
 	val=`cat $INSTANCE/tracing_cpumask`
 	if [ `echo $val | sed -e s/f//g`x != x ]; then
-		emit_kv $PREFIX.cpumask = $val
+		emit_kv $PREFIX.cpumask = "\"$val\""
 	fi
 	val=`cat $INSTANCE/tracing_on`
 	if [ "$val" = "0" ]; then
