@@ -218,6 +218,7 @@ setup_events() { # prefix("ftrace" or "ftrace.instance.INSTANCE") [instance]
 	prefix="${1}.event"
 	if xbc_has_branch ${1}.event; then
 		for grpev in `xbc_subkeys ${1}.event 2`; do
+			[ "$grpev" = "enable" ] && continue
 			setup_event $prefix ${grpev%.*} ${grpev#*.} $2
 		done
 	fi
