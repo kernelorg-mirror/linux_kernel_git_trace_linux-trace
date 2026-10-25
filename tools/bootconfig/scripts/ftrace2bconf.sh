@@ -88,10 +88,10 @@ DEFINED_VARS=
 UNRESOLVED_EVENTS=
 
 defined_vars() { # event-dir
-	grep "^hist" $1/trigger | grep -o ':[a-zA-Z0-9]*='
+	grep "^hist" $1/trigger | grep -o ':[a-zA-Z0-9_]*='
 }
 referred_vars() {
-	grep "^hist" $1/trigger | grep -o '$[a-zA-Z0-9]*'
+	grep "^hist" $1/trigger | grep -o '$[a-zA-Z0-9_]*'
 }
 
 event_is_enabled() { # enable-file
