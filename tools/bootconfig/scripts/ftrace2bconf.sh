@@ -115,8 +115,10 @@ per_event_options() { # event-dir
 		done
 		DEFINED_VARS="$DEFINED_VARS "`defined_vars $evdir`
 	fi
-	grep -v "^#" $evdir/trigger | while read action active; do
-		emit_kv $PREFIX.event.$group.$event.actions += \'$action\'
+	grep -v "^#" $evdir/trigger |
+		sed -e 's/ \[active\]$//' -e 's/ \[paused\]$//' |
+		while IFS= read -r action; do
+		emit_kv $PREFIX.event.$group.$event.actions += "'$action'"
 	done
 
 	if [ $GROUP_ENABLED -eq 0 ] && event_is_enabled $evdir/enable; then
