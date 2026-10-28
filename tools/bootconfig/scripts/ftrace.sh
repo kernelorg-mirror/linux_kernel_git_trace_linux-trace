@@ -21,13 +21,13 @@ reset_trigger_file() {
     # remove action triggers first
     grep -H ':on[^:]*(' $@ |
     while read line; do
-        cmd=`echo $line | cut -f2- -d: | cut -f1 -d"["`
+	cmd=`echo "$line" | cut -f2- -d: | sed -e 's/ \[active\]$//' -e 's/ \[paused\]$//'`
 	file=`echo $line | cut -f1 -d:`
 	echo "!$cmd" >> $file
     done
     grep -Hv ^# $@ |
     while read line; do
-        cmd=`echo $line | cut -f2- -d: | cut -f1 -d"["`
+	cmd=`echo "$line" | cut -f2- -d: | sed -e 's/ \[active\]$//' -e 's/ \[paused\]$//'`
 	file=`echo $line | cut -f1 -d:`
 	echo "!$cmd" > $file
     done
