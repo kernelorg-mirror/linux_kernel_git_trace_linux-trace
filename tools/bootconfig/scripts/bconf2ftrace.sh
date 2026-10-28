@@ -41,7 +41,7 @@ fi
 run_cmd() { # command
 	echo "$*"
 	if [ x"$APPLY" != x ]; then # apply command
-		eval $*
+		eval "$*"
 	fi
 }
 
