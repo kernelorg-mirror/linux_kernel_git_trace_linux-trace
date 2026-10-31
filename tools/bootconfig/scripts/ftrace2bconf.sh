@@ -126,7 +126,22 @@ per_event_options() { # event-dir
 		*:count=*)
 			action="${action_cmd%:count=*}:${action_cmd##*:count=}$action_rest";;
 		esac
-		emit_kv $PREFIX.event.$group.$event.actions += "'$action'"
+		case "$action" in
+		*\'*)
+			case "$action" in
+			*\"*)
+				case "$action" in
+				*[,\;\#\}]*)
+					cat 1>&2 << EOF
+# WARN: $PREFIX.event.$group.$event.actions cannot be quoted for bootconfig. Skip it.
+EOF
+					continue;;
+				esac;;
+			*) action="\"$action\"";;
+			esac;;
+		*) action="'$action'";;
+		esac
+		emit_kv $PREFIX.event.$group.$event.actions += "$action"
 	done
 
 	if [ $GROUP_ENABLED -eq 0 ] && event_is_enabled $evdir/enable; then
