@@ -118,6 +118,15 @@ per_event_options() { # event-dir
 	grep -v "^#" $evdir/trigger |
 		sed -e 's/ \[active\]$//' -e 's/ \[paused\]$//' |
 		while IFS= read -r action; do
+		action_cmd=${action%% *}
+		action_rest=${action#"$action_cmd"}
+		case "$action_cmd" in
+		hist:*) ;;
+		*:unlimited)
+			action="${action_cmd%:unlimited}$action_rest";;
+		*:count=*)
+			action="${action_cmd%:count=*}:${action_cmd##*:count=}$action_rest";;
+		esac
 		emit_kv $PREFIX.event.$group.$event.actions += "'$action'"
 	done
 
