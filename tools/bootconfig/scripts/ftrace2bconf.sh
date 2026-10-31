@@ -114,7 +114,8 @@ per_event_options() { # event-dir
 		DEFINED_VARS="$DEFINED_VARS "`defined_vars $evdir`
 	fi
 	grep -v "^#" $evdir/trigger |
-		sed -e 's/ \[active\]$//' -e 's/ \[paused\]$//' |
+		sed -e '/^hist:.* \[paused\]$/s/^hist:/hist:pause:/' \
+			-e 's/ \[active\]$//' -e 's/ \[paused\]$//' |
 		while IFS= read -r action; do
 		action_cmd=${action%% *}
 		action_rest=${action#"$action_cmd"}
