@@ -258,7 +258,7 @@ setup_instance() { # [instance]
 	set_value_of ${instance}.tracer ${instancedir}/current_tracer
 	set_array_of ${instance}.ftrace.filters \
 		${instancedir}/set_ftrace_filter
-	set_array_of ${instance}.ftrace.notrace \
+	set_array_of ${instance}.ftrace.notraces \
 		${instancedir}/set_ftrace_notrace
 
 	if xbc_has_key ${instance}.alloc_snapshot; then
