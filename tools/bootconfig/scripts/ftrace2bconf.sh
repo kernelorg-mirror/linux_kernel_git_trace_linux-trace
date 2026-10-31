@@ -203,10 +203,10 @@ event_options() {
 			per_event_options $INSTANCE/events/$group/$event
 		done
 	done
-	retry=0
-	while [ $retry -lt 3 ]; do
+	while [ "$UNRESOLVED_EVENTS" ]; do
+		prev_unresolved=$UNRESOLVED_EVENTS
 		retry_unresolved
-		retry=$((retry + 1))
+		[ "$prev_unresolved" = "$UNRESOLVED_EVENTS" ] && break
 	done
 	if [ "$UNRESOLVED_EVENTS" ]; then
 		cat 1>&2 << EOF
