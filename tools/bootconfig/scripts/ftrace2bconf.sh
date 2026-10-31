@@ -84,8 +84,6 @@ synth_event_options() {
 }
 
 # Variables resolver
-DEFINED_VARS=
-UNRESOLVED_EVENTS=
 
 defined_vars() { # event-dir
 	grep "^hist" $1/trigger | grep -o ':[a-zA-Z0-9_]*='
@@ -164,6 +162,8 @@ retry_unresolved() {
 
 event_options() {
 	# PREFIX and INSTANCE must be set
+	DEFINED_VARS=
+	UNRESOLVED_EVENTS=
 	if [ $PREFIX = "ftrace" ]; then
 		# define the dynamic events
 		kprobe_event_options
