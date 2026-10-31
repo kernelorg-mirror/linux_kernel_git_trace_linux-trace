@@ -36,21 +36,26 @@ xbc_get_val() { # key [maxnum]
 	if [ "$2" ]; then
 		MAXOPT="-L $2"
 	fi
-	grep "^$1 =" $XBC_TMPFILE | cut -d= -f2- | \
+	awk -v key="$1" '$1 == key && $2 == "="' "$XBC_TMPFILE" | cut -d= -f2- | \
 		sed -e 's/", /" /g' -e "s/',/' /g" | \
 		xargs $MAXOPT -n 1 echo
 }
 
 xbc_has_key() { # key
-	grep -q "^$1 =" $XBC_TMPFILE
+	awk -v key="$1" '$1 == key && $2 == "=" { found = 1 }
+		END { exit !found }' "$XBC_TMPFILE"
 }
 
 xbc_has_branch() { # prefix-key
-	grep -q "^$1" $XBC_TMPFILE
+	awk -v key="$1" '$1 == key || index($1, key ".") == 1 { found = 1 }
+		END { exit !found }' "$XBC_TMPFILE"
 }
 
 xbc_subkeys() { # prefix-key depth [subkey-pattern]
 	__keys=`echo $1 | sed "s/\./ /g"`
 	__s=`nr_args $__keys`
-	grep "^$1$3" $XBC_TMPFILE | cut -d= -f1| cut -d. -f$((__s + 1))-$((__s + $2)) | uniq
+	awk -v key="$1" -v pattern="$3" '
+		index($1, key ".") == 1 &&
+		substr($1, length(key) + 1) ~ ("^" pattern) { print $1 }
+	' "$XBC_TMPFILE" | cut -d. -f$((__s + 1))-$((__s + $2)) | uniq
 }
