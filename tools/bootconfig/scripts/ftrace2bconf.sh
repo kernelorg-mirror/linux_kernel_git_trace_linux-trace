@@ -126,6 +126,19 @@ per_event_options() { # event-dir
 	fi
 	val=`cat $evdir/filter`
 	if [ "$val" != "none" ]; then
+		case "$val" in
+		*[,\;\#\}]*)
+			case "$val" in
+			*\"*\'*|*\'*\"*)
+				cat 1>&2 << EOF
+# WARN: $PREFIX.event.$group.$event.filter cannot be quoted for bootconfig. Skip it.
+EOF
+				return;;
+			*\"*) val="'$val'";;
+			*) val="\"$val\"";;
+			esac
+			;;
+		esac
 		emit_kv $PREFIX.event.$group.$event.filter = "$val"
 	fi
 }
