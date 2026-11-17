@@ -670,36 +670,31 @@ static inline void smp_prepare_cpus(unsigned int maxcpus) { }
  */
 static void __init setup_command_line(char *command_line)
 {
-	size_t len, xlen = 0, ilen = 0;
+	size_t xlen = 0, ilen = 0;
+	size_t saved_cmdline_size;
+	size_t static_cmdline_size;
 
 	if (extra_command_line)
 		xlen = strlen(extra_command_line);
 	if (extra_init_args) {
-		extra_init_args = strim(extra_init_args); /* remove trailing space */
-		ilen = strlen(extra_init_args) + 4; /* for " -- " */
+		extra_init_args = strim(extra_init_args);
+		ilen = strlen(extra_init_args) + strlen(" -- ");
 	}
 
-	len = xlen + strlen(boot_command_line) + ilen + 1;
+	/* Keep bootconfig kernel parameters before any "--" separator. */
+	saved_cmdline_size = xlen + strlen(boot_command_line) + ilen + 1;
+	saved_command_line = memblock_alloc_or_panic(saved_cmdline_size, SMP_CACHE_BYTES);
+	saved_command_line_len = scnprintf(saved_command_line, saved_cmdline_size, "%s%s",
+					   extra_command_line ?: "", boot_command_line);
 
-	saved_command_line = memblock_alloc_or_panic(len, SMP_CACHE_BYTES);
-
-	len = xlen + strlen(command_line) + 1;
-
-	static_command_line = memblock_alloc_or_panic(len, SMP_CACHE_BYTES);
-
-	if (xlen) {
-		/*
-		 * We have to put extra_command_line before boot command
-		 * lines because there could be dashes (separator of init
-		 * command line) in the command lines.
-		 */
-		strcpy(saved_command_line, extra_command_line);
-		strcpy(static_command_line, extra_command_line);
-	}
-	strcpy(saved_command_line + xlen, boot_command_line);
-	strcpy(static_command_line + xlen, command_line);
+	static_cmdline_size = xlen + strlen(command_line) + 1;
+	static_command_line = memblock_alloc_or_panic(static_cmdline_size, SMP_CACHE_BYTES);
+	scnprintf(static_command_line, static_cmdline_size, "%s%s",
+		  extra_command_line ?: "", command_line);
 
 	if (ilen) {
+		size_t len;
+
 		/*
 		 * Append supplemental init boot args to saved_command_line
 		 * so that user can check what command line options passed
@@ -709,19 +704,16 @@ static void __init setup_command_line(char *command_line)
 		 */
 		if (initargs_offs) {
 			len = xlen + initargs_offs;
-			strcpy(saved_command_line + len, extra_init_args);
-			len += ilen - 4;	/* strlen(extra_init_args) */
-			strcpy(saved_command_line + len,
-				boot_command_line + initargs_offs - 1);
+			len += scnprintf(saved_command_line + len, saved_cmdline_size - len, "%s%s",
+					 extra_init_args, boot_command_line + initargs_offs - 1);
 		} else {
-			len = strlen(saved_command_line);
-			strcpy(saved_command_line + len, " -- ");
-			len += 4;
-			strcpy(saved_command_line + len, extra_init_args);
+			len = saved_command_line_len;
+			len += scnprintf(saved_command_line + len, saved_cmdline_size - len,
+					 " -- %s", extra_init_args);
 		}
-	}
 
-	saved_command_line_len = strlen(saved_command_line);
+		saved_command_line_len = len;
+	}
 }
 
 /*
